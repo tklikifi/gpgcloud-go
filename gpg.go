@@ -1,188 +1,183 @@
 package main
 
 import (
-	"bytes"
-	"encoding/base64"
-    "fmt"
-    "flag"
-	"golang.org/x/crypto/openpgp"
-    "golang.org/x/crypto/ssh/terminal"
-    "io/ioutil"
+	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"flag"
+	"fmt"
+	"github.com/tklikifi/gpgcloud-go/encrypt"
+	"golang.org/x/crypto/ssh/terminal"
+	"io"
 	"log"
 	"os"
-    "os/signal"
-    "syscall"
-    "time"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
-func encrypt(pubringFile string, inputFile string, outputFile string) (string, error) {
-	// Open files
-	pubring, err := os.Open(pubringFile)
-    if err != nil {
-        return "", err
-    }
-    defer pubring.Close()
-    plaintext, err := ioutil.ReadFile(inputFile)
-    if err != nil {
-        return "", err
-    }
-    entityList, err := openpgp.ReadKeyRing(pubring)
-	if err != nil {
-		return "", err
-	}
-
-	// Encrypt data
-	buf := new(bytes.Buffer)
-	w, err := openpgp.Encrypt(buf, entityList, nil, nil, nil)
-	if err != nil {
-		return "", err
-	}
-	_, err = w.Write(plaintext)
-	if err != nil {
-		return "", err
-	}
-	err = w.Close()
-	if err != nil {
-		return "", err
-	}
-
-	// Encode to base64
-    ciphertext, err := ioutil.ReadAll(buf)
-    if err != nil {
-        return "", err
-    }
-	ciphertext_b64 := base64.StdEncoding.EncodeToString(ciphertext)
-
-    // Write to file
-    err = ioutil.WriteFile(outputFile, []byte(ciphertext_b64), 0644)
-    if err != nil {
-        return "", err
-    }
-    return "ok", nil
-}
-
-func decrypt(passphrase []byte, secringFile string, inputFile string, outputFile string) (string, error) {
-	// Init some variables
-	var entity *openpgp.Entity
-	var entityList openpgp.EntityList
-
-	// Open the secret key file
-	secring, err := os.Open(secringFile)
-	if err != nil {
-		return "", err
-	}
-	defer secring.Close()
-	entityList, err = openpgp.ReadKeyRing(secring)
-	if err != nil {
-		return "", err
-	}
-	entity = entityList[0]
-
-	entity.PrivateKey.Decrypt(passphrase)
-	for _, subkey := range entity.Subkeys {
-		subkey.PrivateKey.Decrypt(passphrase)
-	}
-
-    // Read encrypted data
-    ciphertext_b64, err := ioutil.ReadFile(inputFile)
-    if err != nil {
-        return "", err
-    }
-
-	// Decode the base64 string
-	ciphertext, err := base64.StdEncoding.DecodeString(string(ciphertext_b64))
-	if err != nil {
-		return "", err
-	}
-
-	// Decrypt it with the contents of the private key
-	md, err := openpgp.ReadMessage(bytes.NewBuffer(ciphertext), entityList, nil, nil)
-	if err != nil {
-		return "", err
-	}
-	plaintext, err := ioutil.ReadAll(md.UnverifiedBody)
-	if err != nil {
-		return "", err
-	}
-
-    // Write to file
-    err = ioutil.WriteFile(outputFile, plaintext, 0644)
-    if err != nil {
-        return "", err
-    }
-    return "ok", nil
-}
-
+// trap_sigint catches Ctrl-C and stores terminal state
 func trap_sigint() {
-    state, err := terminal.GetState(0)
-    if err != nil {
-        log.Fatal(err)
-    }
-    c := make(chan os.Signal, 1)
-    signal.Notify(c, os.Interrupt, syscall.SIGINT)
-    go func() {
-        <-c
-        terminal.Restore(0, state)
-        os.Exit(1)
-    }()
+	state, err := terminal.GetState(0)
+	if err != nil {
+		log.Fatal(err)
+	}
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGINT)
+	go func() {
+		<-c
+		terminal.Restore(0, state)
+		os.Exit(1)
+	}()
 }
 
 type logWriter struct {
 }
 
 func (writer logWriter) Write(bytes []byte) (int, error) {
-    return fmt.Print("[" + time.Now().Format("2006-01-02T15:04:05.999") + "] " + string(bytes))
+	return fmt.Print("[" + time.Now().Format("2006-01-02T15:04:05.999") + "] " + string(bytes))
 }
 
+// ask_passphrase shows the prompt and asks for the passphrase
+func ask_passphrase(prompt string) ([]byte, error) {
+	fmt.Printf(prompt)
+	passphrase, err := terminal.ReadPassword(0)
+	fmt.Printf("\n")
+	return passphrase, err
+}
+
+func calculate_file_hash(filename string) (string, error) {
+	hasher := sha256.New()
+	f, err := os.Open(filename)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Fatal("ERROR: ", err)
+		}
+	}()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// main function for gpg encrypt and decrypt tool
 func main() {
-    log.SetFlags(0)
-    log.SetOutput(new(logWriter))
+	input_type := "Plaintext file"
+	output_type := "Ciphertext file"
 
-    // Parse command line arguments
-    flag.Usage = func() {
-        fmt.Printf("Usage: gpg [options]\n\n")
-        fmt.Printf("Encrypt and decrypt files using the given GPG keyrings.\n\n")
-        flag.PrintDefaults()
-    }
-    d := flag.Bool("d", false, "Decrypt file")
-    i := flag.String("i", "", "Input file to read from")
-    o := flag.String("o", "", "Output file to write to")
-    p := flag.String("p", ".gnupg/pubring.gpg", "Public key ring")
-    s := flag.String("s", ".gnupg/secring.gpg", "Secret key ring")
-    flag.Parse()
+	// Set log formatting
+	log.SetFlags(0)
+	log.SetOutput(new(logWriter))
 
-    if *i == "" {
-        log.Fatal("ERROR: Input file not given")
-    }
-    if *o == "" {
-        log.Fatal("ERROR: Output file not given")
-    }
-    if *p == "" {
-        log.Fatal("ERROR: Public key ring file not given")
-    }
-    if *s == "" {
-        log.Fatal("ERROR: Secret key ring file not given")
-    }
+	// Parse command line arguments
+	flag.Usage = func() {
+		fmt.Printf("Usage: gpg [options]\n\n")
+		fmt.Printf("Encrypt and decrypt files using the given GPG keys.\n\n")
+		flag.PrintDefaults()
+	}
+	flag_d := flag.Bool("d", false, "Decrypt file")
+	flag_i := flag.String("i", "", "Input file")
+	flag_o := flag.String("o", "", "Output file")
+	flag_p := flag.String("p", ".gnupg/pubring.gpg", "Public key ring")
+	flag_s := flag.String("s", ".gnupg/secring.gpg", "Secret key ring")
+	flag_v := flag.Bool("v", false, "Verbose output")
+	flag.Parse()
 
-    // Trap Ctrl-C
-    trap_sigint()
+	if *flag_i == "" {
+		log.Fatal("ERROR: Input file not given")
+	}
+	if *flag_o == "" {
+		log.Fatal("ERROR: Output file not given")
+	}
+	if *flag_p == "" {
+		log.Fatal("ERROR: Public key ring file not given")
+	}
+	if *flag_s == "" {
+		log.Fatal("ERROR: Secret key ring file not given")
+	}
 
-    if *d == true {
-        // Ask for passphrase, do not echo
-        fmt.Printf("Passphrase: ")
-        passphrase, err := terminal.ReadPassword(0)
-        fmt.Printf("\n")
-        if err != nil {
-            log.Fatal("ERROR: ", err)
-        }
-        _, err = decrypt(passphrase, *s, *i, *o)
-        if err != nil {
-            log.Fatal("ERROR: ", err)
-        }
-    } else {
-    	_, err := encrypt(*p, *i, *o)
-    	if err != nil {
-    		log.Fatal("ERROR: ", err)
-    	}
-    }
+	// Trap Ctrl-C
+	trap_sigint()
+
+	// Open files
+	i_f, err := os.Open(*flag_i)
+	if err != nil {
+		log.Fatal("ERROR: ", err)
+	}
+	defer func() {
+		if err := i_f.Close(); err != nil {
+			log.Fatal("ERROR: ", err)
+		}
+	}()
+	o_f, err := os.Create(*flag_o)
+	if err != nil {
+		log.Fatal("ERROR: ", err)
+	}
+	defer func() {
+		if err := o_f.Close(); err != nil {
+			log.Fatal("ERROR: ", err)
+		}
+	}()
+	p_f, err := os.Open(*flag_p)
+	if err != nil {
+		log.Fatal("ERROR: ", err)
+	}
+	defer func() {
+		if err := p_f.Close(); err != nil {
+			log.Fatal("ERROR: ", err)
+		}
+	}()
+	s_f, err := os.Open(*flag_s)
+	if err != nil {
+		log.Fatal("ERROR: ", err)
+	}
+	defer func() {
+		if err := s_f.Close(); err != nil {
+			log.Fatal("ERROR: ", err)
+		}
+	}()
+
+	// Create reader and writer
+	input := bufio.NewReader(i_f)
+	output := bufio.NewWriter(o_f)
+	pubring := bufio.NewReader(p_f)
+	secring := bufio.NewReader(s_f)
+
+	if *flag_d == true {
+		input_type = "Encrypted file"
+		output_type = "Plaintext file"
+
+		// Ask for passphrase, do not echo the passphrase
+		passphrase, err := ask_passphrase("Passphrase: ")
+		if err != nil {
+			log.Fatal("ERROR: ", err)
+		}
+		// Decrypt file data
+		if _, err := encrypt.Decrypt(secring, passphrase, input, output); err != nil {
+			log.Fatal("ERROR: ", err)
+		}
+	} else {
+		input_type = "Plaintext file"
+		output_type = "Encrypted file"
+
+		// Encrypt file data
+		if _, err := encrypt.Encrypt(pubring, input, output); err != nil {
+			log.Fatal("ERROR: ", err)
+		}
+	}
+	if *flag_v {
+		input_hash, err := calculate_file_hash(*flag_i)
+		if err != nil {
+			log.Fatal("ERROR: ", err)
+		}
+		output_hash, err := calculate_file_hash(*flag_o)
+		if err != nil {
+			log.Fatal("ERROR: ", err)
+		}
+		fmt.Printf("%s SHA256: %s %s\n", input_type, input_hash, *flag_i)
+		fmt.Printf("%s SHA256: %s %s\n", output_type, output_hash, *flag_o)
+	}
 }
