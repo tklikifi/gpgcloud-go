@@ -63,11 +63,26 @@ func calculate_file_hash(filename string) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
+func show_sha256_checksums(decrypt bool, input_file string, output_file string) {
+	input_type, output_type := "Plaintext", "Encrypted"
+	if decrypt {
+		input_type, output_type = "Encrypted", "Plaintext"
+	}
+	// Show SHA256 checksums for input and outout files
+	input_hash, err := calculate_file_hash(input_file)
+	if err != nil {
+		log.Fatal("ERROR: ", err)
+	}
+	output_hash, err := calculate_file_hash(output_file)
+	if err != nil {
+		log.Fatal("ERROR: ", err)
+	}
+	fmt.Printf("%s file SHA256: %s %s\n", input_type, input_hash, input_file)
+	fmt.Printf("%s file SHA256: %s %s\n", output_type, output_hash, output_file)
+}
+
 // main function for gpg encrypt and decrypt tool
 func main() {
-	input_type := "Plaintext file"
-	output_type := "Ciphertext file"
-
 	// Set log formatting
 	log.SetFlags(0)
 	log.SetOutput(new(logWriter))
@@ -140,16 +155,13 @@ func main() {
 		}
 	}()
 
-	// Create reader and writer
+	// Create readers and writers
 	input := bufio.NewReader(i_f)
 	output := bufio.NewWriter(o_f)
 	pubring := bufio.NewReader(p_f)
 	secring := bufio.NewReader(s_f)
 
-	if *flag_d == true {
-		input_type = "Encrypted file"
-		output_type = "Plaintext file"
-
+	if *flag_d {
 		// Ask for passphrase, do not echo the passphrase
 		passphrase, err := ask_passphrase("Passphrase: ")
 		if err != nil {
@@ -160,24 +172,12 @@ func main() {
 			log.Fatal("ERROR: ", err)
 		}
 	} else {
-		input_type = "Plaintext file"
-		output_type = "Encrypted file"
-
 		// Encrypt file data
 		if _, err := encrypt.Encrypt(pubring, input, output); err != nil {
 			log.Fatal("ERROR: ", err)
 		}
 	}
 	if *flag_v {
-		input_hash, err := calculate_file_hash(*flag_i)
-		if err != nil {
-			log.Fatal("ERROR: ", err)
-		}
-		output_hash, err := calculate_file_hash(*flag_o)
-		if err != nil {
-			log.Fatal("ERROR: ", err)
-		}
-		fmt.Printf("%s SHA256: %s %s\n", input_type, input_hash, *flag_i)
-		fmt.Printf("%s SHA256: %s %s\n", output_type, output_hash, *flag_o)
+		show_sha256_checksums(*flag_d, *flag_i, *flag_o)
 	}
 }
