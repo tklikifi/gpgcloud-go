@@ -2,13 +2,10 @@ package main
 
 import (
 	"bufio"
-	"crypto/sha256"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"github.com/tklikifi/gpgcloud-go/encrypt"
 	"golang.org/x/crypto/ssh/terminal"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -44,41 +41,6 @@ func ask_passphrase(prompt string) ([]byte, error) {
 	passphrase, err := terminal.ReadPassword(0)
 	fmt.Printf("\n")
 	return passphrase, err
-}
-
-func calculate_file_hash(filename string) (string, error) {
-	hasher := sha256.New()
-	f, err := os.Open(filename)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			log.Fatal("ERROR: ", err)
-		}
-	}()
-	if _, err := io.Copy(hasher, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
-}
-
-func show_sha256_checksums(decrypt bool, input_file string, output_file string) {
-	input_type, output_type := "Plaintext", "Encrypted"
-	if decrypt {
-		input_type, output_type = "Encrypted", "Plaintext"
-	}
-	// Show SHA256 checksums for input and outout files
-	input_hash, err := calculate_file_hash(input_file)
-	if err != nil {
-		log.Fatal("ERROR: ", err)
-	}
-	output_hash, err := calculate_file_hash(output_file)
-	if err != nil {
-		log.Fatal("ERROR: ", err)
-	}
-	fmt.Printf("%s file SHA256: %s %s\n", input_type, input_hash, input_file)
-	fmt.Printf("%s file SHA256: %s %s\n", output_type, output_hash, output_file)
 }
 
 // main function for gpg encrypt and decrypt tool
@@ -168,16 +130,23 @@ func main() {
 			log.Fatal("ERROR: ", err)
 		}
 		// Decrypt file data
-		if _, err := encrypt.Decrypt(secring, passphrase, input, output); err != nil {
+		input_hash, output_hash, err := encrypt.Decrypt(secring, passphrase, input, output)
+		if err != nil {
 			log.Fatal("ERROR: ", err)
+		}
+		if *flag_v {
+			fmt.Printf("I: sha256:%s %s\n", input_hash, *flag_i)
+			fmt.Printf("O: sha256:%s %s\n", output_hash, *flag_o)
 		}
 	} else {
 		// Encrypt file data
-		if _, err := encrypt.Encrypt(pubring, input, output); err != nil {
+		input_hash, output_hash, err := encrypt.Encrypt(pubring, input, output)
+		if err != nil {
 			log.Fatal("ERROR: ", err)
 		}
-	}
-	if *flag_v {
-		show_sha256_checksums(*flag_d, *flag_i, *flag_o)
+		if *flag_v {
+			fmt.Printf("I: sha256:%s %s\n", input_hash, *flag_i)
+			fmt.Printf("O: sha256:%s %s\n", output_hash, *flag_o)
+		}
 	}
 }
