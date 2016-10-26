@@ -109,5 +109,5 @@ func TestEncryptDecryptF(t *testing.T) {
 		log.Fatal("ERROR: output_hash_2 != testdata_hash")
 	}
 	fmt.Println("OK")
-    // Output: OK
+	// Output: OK
 }
